@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <title>Tako Memes</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root {
+      --bg: var(--tg-theme-bg-color, #1a1a2e);
+      --text: var(--tg-theme-text-color, #eee);
+      --hint: var(--tg-theme-hint-color, #888);
+      --accent: var(--tg-theme-button-color, #4ecca3);
+      --accent-text: var(--tg-theme-button-text-color, #1a1a2e);
+      --card: var(--tg-theme-secondary-bg-color, #16213e);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 16px;
+      min-height: 100vh;
+    }
+
+    h1 {
+      font-size: 1.4rem;
+      margin-bottom: 4px;
+    }
+
+    .subtitle {
+      color: var(--hint);
+      font-size: 0.85rem;
+      margin-bottom: 20px;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .tab {
+      flex: 1;
+      padding: 10px;
+      border: none;
+      border-radius: 10px;
+      background: var(--card);
+      color: var(--text);
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+
+    .tab.active {
+      background: var(--accent);
+      color: var(--accent-text);
+      font-weight: 600;
+    }
+
+    .panel { display: none; }
+    .panel.active { display: block; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+    }
+
+    .meme-card {
+      background: var(--card);
+      border-radius: 12px;
+      overflow: hidden;
+      cursor: pointer;
+      transition: transform 0.15s;
+    }
+
+    .meme-card:active { transform: scale(0.97); }
+
+    .meme-card img {
+      width: 100%;
+      aspect-ratio: 1;
+      object-fit: cover;
+      display: block;
+    }
+
+    .meme-card .caption {
+      padding: 8px;
+      font-size: 0.75rem;
+      color: var(--hint);
+      text-align: center;
+    }
+
+    .empty {
+      text-align: center;
+      color: var(--hint);
+      padding: 40px 16px;
+    }
+
+    .form-group {
+      margin-bottom: 14px;
+    }
+
+    label {
+      display: block;
+      font-size: 0.85rem;
+      margin-bottom: 6px;
+      color: var(--hint);
+    }
+
+    input, textarea {
+      width: 100%;
+      padding: 12px;
+      border: none;
+      border-radius: 10px;
+      background: var(--card);
+      color: var(--text);
+      font-size: 0.95rem;
+    }
+
+    textarea { resize: vertical; min-height: 80px; }
+
+    .btn {
+      width: 100%;
+      padding: 14px;
+      border: none;
+      border-radius: 12px;
+      background: var(--accent);
+      color: var(--accent-text);
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .btn:disabled { opacity: 0.5; }
+
+    .status {
+      text-align: center;
+      padding: 12px;
+      font-size: 0.85rem;
+      color: var(--hint);
+    }
+  </style>
+</head>
+<body>
+  <h1>🐙 Мемы Тако</h1>
+  <p class="subtitle">Выбери мем для отправки или предложи свой</p>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="gallery">Галерея</button>
+    <button class="tab" data-tab="submit">Предложить</button>
+  </div>
+
+  <div id="gallery" class="panel active">
+    <div id="meme-grid" class="grid"></div>
+    <p id="gallery-empty" class="empty" style="display:none">Мемов пока нет — предложи первый!</p>
+    <p id="gallery-loading" class="status">Загрузка...</p>
+  </div>
+
+  <div id="submit" class="panel">
+    <div class="form-group">
+      <label for="meme-url">Ссылка на картинку</label>
+      <input id="meme-url" type="url" placeholder="https://...">
+    </div>
+    <div class="form-group">
+      <label for="meme-caption">Подпись (необязательно)</label>
+      <textarea id="meme-caption" placeholder="Описание мема..."></textarea>
+    </div>
+    <button class="btn" id="submit-btn">Отправить на модерацию</button>
+    <p class="status">Или отправь фото в бот с командой /submit в подписи</p>
+  </div>
+
+  <script>
+    const tg = window.Telegram.WebApp;
+    tg.ready();
+    tg.expand();
+
+    const API_URL = "http://localhost:8080";
+
+    document.querySelectorAll(".tab").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".tab").forEach(b => b.classList.remove("active"));
+        document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
+        btn.classList.add("active");
+        document.getElementById(btn.dataset.tab).classList.add("active");
+      });
+    });
+
+    async function loadMemes() {
+      const grid = document.getElementById("meme-grid");
+      const empty = document.getElementById("gallery-empty");
+      const loading = document.getElementById("gallery-loading");
+
+      try {
+        const res = await fetch(`${API_URL}/api/memes`);
+        const data = await res.json();
+        loading.style.display = "none";
+
+        if (!data.memes || data.memes.length === 0) {
+          empty.style.display = "block";
+          return;
+        }
+
+        data.memes.forEach(meme => {
+          const card = document.createElement("div");
+          card.className = "meme-card";
+          card.innerHTML = `
+            <img src="${meme.url}" alt="meme" loading="lazy">
+            ${meme.caption ? `<div class="caption">${meme.caption}</div>` : ""}
+          `;
+          card.addEventListener("click", () => {
+            tg.sendData(JSON.stringify({
+              action: "send_meme",
+              meme_id: meme.id
+            }));
+            tg.close();
+          });
+          grid.appendChild(card);
+        });
+      } catch (e) {
+        loading.textContent = "Не удалось загрузить мемы. Проверь, что API запущен.";
+      }
+    }
+
+    document.getElementById("submit-btn").addEventListener("click", () => {
+      const url = document.getElementById("meme-url").value.trim();
+      const caption = document.getElementById("meme-caption").value.trim();
+
+      if (!url) {
+        tg.showAlert("Укажи ссылку на картинку");
+        return;
+      }
+
+      tg.sendData(JSON.stringify({
+        action: "submit_meme",
+        url,
+        caption
+      }));
+      tg.close();
+    });
+
+    loadMemes();
+  </script>
+</body>
+</html>
