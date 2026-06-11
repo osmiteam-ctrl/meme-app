@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
   <title>Tako Memes</title>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     :root {
@@ -140,11 +141,25 @@
       color: var(--hint);
       margin-top: 8px;
     }
+
+    .gallery-status {
+      margin-bottom: 12px;
+      padding: 12px;
+      border-radius: 10px;
+      background: var(--card);
+      font-size: 0.85rem;
+      text-align: center;
+      line-height: 1.4;
+    }
+
+    .gallery-status.ok { color: var(--accent); }
+    .gallery-status.err { color: #ff6b6b; }
+    .gallery-status.wait { color: var(--hint); }
   </style>
 </head>
 <body>
   <h1>🐙 Мемы Тако</h1>
-  <p class="subtitle">Выбери мем или загрузи свой</p>
+  <p class="subtitle">Выбери мем для стрима или загрузи свой</p>
 
   <div class="tabs">
     <button class="tab active" data-tab="gallery">Галерея</button>
@@ -152,6 +167,10 @@
   </div>
 
   <div id="gallery" class="panel active">
+    <p id="gallery-status" class="gallery-status wait">
+      Нажми на мем — он появится на стриме<br>
+      <small>1 мем в минуту с одного аккаунта</small>
+    </p>
     <div id="meme-grid" class="grid"></div>
     <p id="gallery-empty" class="empty" style="display:none">Мемов пока нет — предложи первый!</p>
     <p id="gallery-loading" class="status">Загрузка...</p>
@@ -172,7 +191,8 @@
       <textarea id="meme-caption" placeholder="Описание мема..."></textarea>
     </div>
     <button class="btn" id="submit-btn">Отправить на модерацию</button>
-    <p class="hint">После отправки смотри ответ бота в чате. Или фото в бот: /submit в подписи.</p>
+    <p class="hint">Или отправь фото в чат с ботом.</p>
+    <p class="hint" style="margin-top:4px">v7</p>
   </div>
 
   <script>
@@ -188,6 +208,32 @@
     }
 
     const API_BASE = getApiBase();
+    const COOLDOWN_MS = 60000;
+    let cooldownUntil = 0;
+    const galleryStatus = document.getElementById("gallery-status");
+
+    function setGalleryStatus(text, kind) {
+      galleryStatus.innerHTML = text;
+      galleryStatus.className = "gallery-status " + (kind || "wait");
+    }
+
+    function updateCooldownUi() {
+      const left = cooldownUntil - Date.now();
+      if (left > 0) {
+        const sec = Math.ceil(left / 1000);
+        setGalleryStatus(
+          `Следующий мем через <b>${sec}</b> сек.<br><small>или выберите другой аккаунт</small>`,
+          "wait"
+        );
+        return;
+      }
+      setGalleryStatus(
+        "Нажми на мем — он появится на стриме<br><small>1 мем в минуту</small>",
+        "wait"
+      );
+    }
+
+    setInterval(updateCooldownUi, 500);
 
     document.querySelectorAll(".tab").forEach(btn => {
       btn.addEventListener("click", () => {
@@ -234,9 +280,28 @@
             <img src="${meme.url}" alt="meme" loading="lazy">
             ${meme.caption ? `<div class="caption">${meme.caption}</div>` : ""}
           `;
-          card.addEventListener("click", () => {
-            tg.sendData(JSON.stringify({ action: "send_meme", meme_id: meme.id }));
-            tg.close();
+          card.addEventListener("click", async () => {
+            if (Date.now() < cooldownUntil) {
+              updateCooldownUi();
+              return;
+            }
+            setGalleryStatus("Отправляем на стрим...", "wait");
+            try {
+              const result = await showOnStream(meme.id);
+              cooldownUntil = Date.now() + COOLDOWN_MS;
+              setGalleryStatus(
+                "✓ Мем на стриме! Смотри OBS.<br><small>следующий через 60 сек.</small>",
+                "ok"
+              );
+              tg.HapticFeedback?.impactOccurred("medium");
+            } catch (e) {
+              const msg = e.message || "Ошибка";
+              setGalleryStatus("✗ " + msg, "err");
+              const match = msg.match(/(\d+)\s*сек/);
+              if (match) {
+                cooldownUntil = Date.now() + parseInt(match[1], 10) * 1000;
+              }
+            }
           });
           grid.appendChild(card);
         });
@@ -245,16 +310,67 @@
       }
     }
 
-    async function uploadFile(file) {
-      const form = new FormData();
-      form.append("file", file);
-      const res = await fetch(`${API_BASE}/api/upload`, { method: "POST", body: form });
+    function getUser() {
+      return (tg.initDataUnsafe && tg.initDataUnsafe.user) || null;
+    }
+
+    function getAuthorName() {
+      const user = getUser();
+      if (!user) return "anonymous";
+      return [user.first_name, user.last_name].filter(Boolean).join(" ").trim() || user.username || "user";
+    }
+
+    function getUserId() {
+      const user = getUser();
+      return user && user.id ? user.id : 0;
+    }
+
+    async function showOnStream(memeId) {
+      const res = await fetch(`${API_BASE}/api/obs/show`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          meme_id: memeId,
+          user_id: getUserId(),
+          user_name: getAuthorName()
+        })
+      });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || "Ошибка загрузки");
+        const detail = err.detail;
+        throw new Error(typeof detail === "string" ? detail : "Не удалось показать на стриме");
       }
-      const data = await res.json();
-      return data.url;
+      return await res.json();
+    }
+
+    async function submitFileToModeration(file, caption) {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("author", getAuthorName());
+      form.append("caption", caption);
+      const res = await fetch(`${API_BASE}/api/memes/submit-file`, { method: "POST", body: form });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Ошибка отправки файла");
+      }
+      return await res.json();
+    }
+
+    async function submitUrlToModeration(url, caption) {
+      const form = new FormData();
+      form.append("url", url);
+      form.append("author", getAuthorName());
+      form.append("caption", caption);
+      const res = await fetch(`${API_BASE}/api/memes/submit-link`, {
+        method: "POST",
+        body: form
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        const detail = err.detail;
+        throw new Error(typeof detail === "string" ? detail : "Ошибка отправки ссылки");
+      }
+      return await res.json();
     }
 
     document.getElementById("submit-btn").addEventListener("click", async () => {
@@ -270,18 +386,15 @@
 
       btn.disabled = true;
       try {
-        let url = urlInput;
+        let result;
         if (file) {
-          url = await uploadFile(file);
+          result = await submitFileToModeration(file, caption);
+        } else {
+          result = await submitUrlToModeration(urlInput, caption);
         }
+        const memeId = result.meme && result.meme.id ? result.meme.id : "?";
 
-        tg.sendData(JSON.stringify({
-          action: "submit_meme",
-          url,
-          caption
-        }));
-
-        tg.showAlert("Отправлено! Проверь чат с ботом.", () => tg.close());
+        tg.showAlert(`Отправлено на модерацию! ID: ${memeId}`);
       } catch (e) {
         tg.showAlert("Ошибка: " + e.message);
         btn.disabled = false;
