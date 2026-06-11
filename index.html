@@ -25,10 +25,7 @@
       min-height: 100vh;
     }
 
-    h1 {
-      font-size: 1.4rem;
-      margin-bottom: 4px;
-    }
+    h1 { font-size: 1.4rem; margin-bottom: 4px; }
 
     .subtitle {
       color: var(--hint);
@@ -73,10 +70,7 @@
       border-radius: 12px;
       overflow: hidden;
       cursor: pointer;
-      transition: transform 0.15s;
     }
-
-    .meme-card:active { transform: scale(0.97); }
 
     .meme-card img {
       width: 100%;
@@ -92,15 +86,14 @@
       text-align: center;
     }
 
-    .empty {
+    .empty, .status {
       text-align: center;
       color: var(--hint);
-      padding: 40px 16px;
+      padding: 16px;
+      font-size: 0.85rem;
     }
 
-    .form-group {
-      margin-bottom: 14px;
-    }
+    .form-group { margin-bottom: 14px; }
 
     label {
       display: block;
@@ -135,17 +128,23 @@
 
     .btn:disabled { opacity: 0.5; }
 
-    .status {
-      text-align: center;
-      padding: 12px;
-      font-size: 0.85rem;
+    .preview {
+      margin-top: 10px;
+      max-height: 160px;
+      border-radius: 10px;
+      display: none;
+    }
+
+    .hint {
+      font-size: 0.8rem;
       color: var(--hint);
+      margin-top: 8px;
     }
   </style>
 </head>
 <body>
   <h1>🐙 Мемы Тако</h1>
-  <p class="subtitle">Выбери мем для отправки или предложи свой</p>
+  <p class="subtitle">Выбери мем или загрузи свой</p>
 
   <div class="tabs">
     <button class="tab active" data-tab="gallery">Галерея</button>
@@ -160,15 +159,20 @@
 
   <div id="submit" class="panel">
     <div class="form-group">
-      <label for="meme-url">Ссылка на картинку</label>
-      <input id="meme-url" type="url" placeholder="https://...">
+      <label for="meme-file">Картинка с устройства</label>
+      <input id="meme-file" type="file" accept="image/jpeg,image/png,image/gif,image/webp">
+      <img id="meme-preview" class="preview" alt="preview">
+    </div>
+    <div class="form-group">
+      <label for="meme-url">Или ссылка на картинку</label>
+      <input id="meme-url" type="url" placeholder="https://.../image.jpg">
     </div>
     <div class="form-group">
       <label for="meme-caption">Подпись (необязательно)</label>
       <textarea id="meme-caption" placeholder="Описание мема..."></textarea>
     </div>
     <button class="btn" id="submit-btn">Отправить на модерацию</button>
-    <p class="status">Или отправь фото в бот с командой /submit в подписи</p>
+    <p class="hint">После отправки смотри ответ бота в чате. Или фото в бот: /submit в подписи.</p>
   </div>
 
   <script>
@@ -176,7 +180,14 @@
     tg.ready();
     tg.expand();
 
-    const API_URL = "https://api.memeapp.osminogr.site";
+    function getApiBase() {
+      let base = (new URLSearchParams(location.search).get("api")
+        || "https://api.memeapp.osminogr.site").trim().replace(/\/$/, "");
+      base = base.replace(/\/api\/memes\/?$/i, "");
+      return base;
+    }
+
+    const API_BASE = getApiBase();
 
     document.querySelectorAll(".tab").forEach(btn => {
       btn.addEventListener("click", () => {
@@ -187,13 +198,27 @@
       });
     });
 
+    const fileInput = document.getElementById("meme-file");
+    const preview = document.getElementById("meme-preview");
+
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files[0];
+      if (!file) {
+        preview.style.display = "none";
+        return;
+      }
+      preview.src = URL.createObjectURL(file);
+      preview.style.display = "block";
+    });
+
     async function loadMemes() {
       const grid = document.getElementById("meme-grid");
       const empty = document.getElementById("gallery-empty");
       const loading = document.getElementById("gallery-loading");
 
       try {
-        const res = await fetch(`${API_URL}/api/memes`);
+        const res = await fetch(`${API_BASE}/api/memes`);
+        if (!res.ok) throw new Error(res.status);
         const data = await res.json();
         loading.style.display = "none";
 
@@ -210,34 +235,57 @@
             ${meme.caption ? `<div class="caption">${meme.caption}</div>` : ""}
           `;
           card.addEventListener("click", () => {
-            tg.sendData(JSON.stringify({
-              action: "send_meme",
-              meme_id: meme.id
-            }));
+            tg.sendData(JSON.stringify({ action: "send_meme", meme_id: meme.id }));
             tg.close();
           });
           grid.appendChild(card);
         });
       } catch (e) {
-        loading.textContent = "Не удалось загрузить мемы. Проверь, что API запущен.";
+        loading.textContent = "Не удалось загрузить мемы: " + API_BASE + "/api/memes";
       }
     }
 
-    document.getElementById("submit-btn").addEventListener("click", () => {
-      const url = document.getElementById("meme-url").value.trim();
-      const caption = document.getElementById("meme-caption").value.trim();
+    async function uploadFile(file) {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch(`${API_BASE}/api/upload`, { method: "POST", body: form });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Ошибка загрузки");
+      }
+      const data = await res.json();
+      return data.url;
+    }
 
-      if (!url) {
-        tg.showAlert("Укажи ссылку на картинку");
+    document.getElementById("submit-btn").addEventListener("click", async () => {
+      const btn = document.getElementById("submit-btn");
+      const urlInput = document.getElementById("meme-url").value.trim();
+      const caption = document.getElementById("meme-caption").value.trim();
+      const file = fileInput.files[0];
+
+      if (!file && !urlInput) {
+        tg.showAlert("Выбери картинку или вставь ссылку");
         return;
       }
 
-      tg.sendData(JSON.stringify({
-        action: "submit_meme",
-        url,
-        caption
-      }));
-      tg.close();
+      btn.disabled = true;
+      try {
+        let url = urlInput;
+        if (file) {
+          url = await uploadFile(file);
+        }
+
+        tg.sendData(JSON.stringify({
+          action: "submit_meme",
+          url,
+          caption
+        }));
+
+        tg.showAlert("Отправлено! Проверь чат с ботом.", () => tg.close());
+      } catch (e) {
+        tg.showAlert("Ошибка: " + e.message);
+        btn.disabled = false;
+      }
     });
 
     loadMemes();
